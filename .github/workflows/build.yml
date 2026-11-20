@@ -1,0 +1,54 @@
+name: Build SoH Dublado + Microfone
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Instalar ferramentas
+        run: |
+          choco install -y llvm ninja
+
+      - name: Baixar mod de microfone e dublagem PT-BR
+        shell: pwsh
+        run: |
+          git clone https://github.com/fabricioply/ocarina-oot-n64.git mic-mod
+          Set-Location mic-mod
+          git clone --recursive https://github.com/GeraldoCruzeiro/Shipwright-PTBR.git upstream/Shipwright
+          $patch = (Get-ChildItem patches/*.patch | Select-Object -First 1).FullName
+          git -C upstream/Shipwright apply $patch
+
+      - name: Configurar vcpkg
+        shell: pwsh
+        run: |
+          $vcpkgCommit = (Get-Content mic-mod/UPSTREAM.json | ConvertFrom-Json).vcpkg.commit
+          git clone https://github.com C:\vcpkg
+          git -C C:\vcpkg checkout $vcpkgCommit
+          C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+
+      - name: Compilar soh.exe
+        shell: pwsh
+        run: |
+          $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          Import-Module "$vsPath\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $vsPath -SkipAutomaticLocation -DevCmdArguments "-arch=x64 -host_arch=x64"
+          $repoRoot = (Resolve-Path "mic-mod").Path
+          cmake -S mic-mod/upstream/Shipwright -B build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl `
+            -DCMAKE_LINKER=lld-link `
+            -DCMAKE_TOOLCHAIN_FILE="C:/vcpkg/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_ROOT="C:/vcpkg" -DUSE_AUTO_VCPKG=ON `
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static `
+            -DOCARINA_N64_SOURCE_ROOT="$repoRoot" -DSUPPRESS_WARNINGS=ON
+          cmake --build build --target soh --parallel
+
+      - name: Empacotar soh.exe pronto
+        uses: actions/upload-artifact@v4
+        with:
+          name: soh-dublado-microfone
+          path: |
+            build/soh/soh.exe
+            mic-mod/upstream/Shipwright/x64/Release/soh.exe
