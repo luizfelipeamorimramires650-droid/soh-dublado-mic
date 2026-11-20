@@ -16,9 +16,57 @@ jobs:
         run: |
           git clone https://github.com/fabricioply/ocarina-oot-n64.git mic-mod
           Set-Location mic-mod
-          git clone --recursive https://github.com/GeraldoCruzeiro/Shipwright-PTBR.git upstream/Shipwright
-          $patch = (Get-ChildItem patches/*.patch | Select-Object -First 1).FullName
-          git -C upstream/Shipwright apply $patch
+          git clone --recursive https://github.com upstream/Shipwright
+
+      - name: Juntar codigo do microfone na dublagem
+        shell: python
+        run: |
+          base = "mic-mod/upstream/Shipwright"
+
+          # 1. soh/CMakeLists.txt
+          p = f"{base}/soh/CMakeLists.txt"
+          txt = open(p, "r", encoding="utf-8-sig").read()
+          txt = txt.replace("link_libraries(OpusFile::opusfile CONFIG REQUIRED)", "link_libraries(OpusFile::opusfile)")
+          txt += '''
+          if(WIN32)
+              set(OCARINA_N64_SOURCE_ROOT "${CMAKE_SOURCE_DIR}/../ocarina-oot-n64" CACHE PATH "Local microphone mod")
+              add_subdirectory("${OCARINA_N64_SOURCE_ROOT}/shared/real_instrument" "${CMAKE_BINARY_DIR}/ocarina_core" EXCLUDE_FROM_ALL)
+              target_sources(${PROJECT_NAME} PRIVATE "${OCARINA_N64_SOURCE_ROOT}/src/soh_microphone.cpp")
+              target_include_directories(${PROJECT_NAME} PRIVATE "${OCARINA_N64_SOURCE_ROOT}/src")
+              target_compile_definitions(${PROJECT_NAME} PRIVATE OCARINA_N64_MIC=1)
+              target_link_libraries(${PROJECT_NAME} PRIVATE real_instrument_game_microphone)
+          endif()
+          if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND MSVC)
+              target_compile_options(soh PRIVATE -Wno-everything -Wall -Wextra)
+              execute_process(COMMAND "${CMAKE_CXX_COMPILER}" --print-resource-dir OUTPUT_VARIABLE OC_CLANG_RESOURCE OUTPUT_STRIP_TRAILING_WHITESPACE)
+              target_link_libraries(soh PRIVATE "${OC_CLANG_RESOURCE}/lib/windows/clang_rt.builtins-x86_64.lib")
+              target_link_options(soh PRIVATE /opt:lldlto=1 /opt:lldltojobs=2 "/lldltocache:${CMAKE_BINARY_DIR}/thinlto-cache" /DEBUG:NONE)
+          endif()
+          '''
+          open(p, "w", encoding="utf-8").write(txt)
+
+          # 2. soh/soh/OTRGlobals.cpp
+          p = f"{base}/soh/soh/OTRGlobals.cpp"
+          txt = open(p, "r", encoding="utf-8-sig").read()
+          txt = '#ifdef OCARINA_N64_MIC\n#include "n64_microphone_c.h"\n#endif\n' + txt
+          txt = txt.replace("AudioPlayer_Play(", "#ifdef OCARINA_N64_MIC\n        if(OcarinaN64_AudioMuted())std::fill_n(audio_buffer,num_audio_samples*NUM_AUDIO_CHANNELS*AUDIO_FRAMES_PER_UPDATE,0);\n#endif\n        AudioPlayer_Play(", 1)
+          open(p, "w", encoding="utf-8").write(txt)
+
+          # 3. soh/soh/SohGui/SohMenuSettings.cpp
+          p = f"{base}/soh/soh/SohGui/SohMenuSettings.cpp"
+          txt = open(p, "r", encoding="utf-8-sig").read()
+          txt = '#ifdef OCARINA_N64_MIC\n#include "n64_microphone_c.h"\n#endif\n' + txt
+          target = 'AddWidget(path, "Audio API (Needs reload)", WIDGET_AUDIO_BACKEND).RaceDisable(false);'
+          if target in txt:
+              txt = txt.replace(target, target + '\n#ifdef OCARINA_N64_MIC\n    AddWidget(path, "Microfone da Ocarina", WIDGET_BUTTON).RaceDisable(false).Callback([](WidgetInfo&) { OcarinaN64_ShowSettings(); });\n#endif', 1)
+          open(p, "w", encoding="utf-8").write(txt)
+
+          # 4. soh/src/code/padmgr.c
+          p = f"{base}/soh/src/code/padmgr.c"
+          txt = open(p, "r", encoding="utf-8-sig").read()
+          txt = '#ifdef OCARINA_N64_MIC\n#include "n64_microphone_c.h"\n#endif\n' + txt
+          txt = txt.replace("PadMgr_UnlockPadData(padMgr);", "#ifdef OCARINA_N64_MIC\n    OcarinaN64_InjectPad(inputs, mode);\n#endif\n    PadMgr_UnlockPadData(padMgr);", 1)
+          open(p, "w", encoding="utf-8").write(txt)
 
       - name: Configurar vcpkg
         shell: pwsh
@@ -52,3 +100,4 @@ jobs:
           path: |
             build/soh/soh.exe
             mic-mod/upstream/Shipwright/x64/Release/soh.exe
+
